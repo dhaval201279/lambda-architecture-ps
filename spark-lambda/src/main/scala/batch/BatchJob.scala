@@ -4,6 +4,7 @@ import java.lang.management.ManagementFactory
 
 import domain.Activity
 import org.apache.spark.sql.{SQLContext, SaveMode}
+import utils.ScalaUtils._
 //import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkConf
@@ -11,20 +12,9 @@ import org.apache.spark.SparkConf
 object BatchJob {
   def main(args: Array[String]): Unit = {
 
-    /** Get spark configurations */
-    val conf = new SparkConf()
-      .setAppName("Lambda with Spark")
-
-    /** Check if running from IDE */
-    if (ManagementFactory.getRuntimeMXBean.getInputArguments.toString.contains("IntelliJ IDEA")) {
-      //System.setProperty("hadoop.home.dir", "H:\\Dhaval\\Tech\\pluralsight-lambda-arch\\exercise files\\bin\\WinUtils") // required for winutils
-      System.setProperty("hadoop.home.dir", "H:\\Dhaval\\Tech\\pluralsight-lambda-arch\\exercise files") // required for winutils
-      conf.setMaster("local[*]")
-    }
-
-    /** setup spark context */
-    val sc = new  SparkContext(conf)
-    implicit val sqlContext = new SQLContext(sc)
+    // Setup Spark Context
+    val sc = getSparkContext("Lambda with Spark")
+    val sqlContext = getSQLContext(sc)
 
     import org.apache.spark.sql.functions._
     import sqlContext.implicits._
