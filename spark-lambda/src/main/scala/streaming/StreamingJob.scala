@@ -1,10 +1,11 @@
 package streaming
 
-import domain.{Activity, ActivityByProduct}
+import domain.{Activity, ActivityByProduct, VisitorsByProduct}
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.functions.{add_months, from_unixtime}
-import org.apache.spark.streaming.{Duration, Seconds, StreamingContext}
+import functions._
+import org.apache.spark.streaming._
 import utils.ScalaUtils._
+import com.twitter.algebird.HyperLogLogMonoid
 
 object StreamingJob {
   def main(args: Array[String]): Unit = {
@@ -33,9 +34,15 @@ object StreamingJob {
           else
             None
         }
-      })
+      }).cache()
 
-      activityStream.transform(rdd => {
+      // from below code variable initialization is for using mapWithState
+      val activityStateSpec = StateSpec
+        .function(mapActivityStateFunc)
+        .timeout(Seconds(30))
+      // till above code variable initialization is for using mapWithState
+
+      val statefulActivityByProduct = activityStream.transform(rdd => {
         val df = rdd.toDF()
         df.registerTempTable("activity")
 
@@ -52,7 +59,74 @@ object StreamingJob {
           .map{r => ((r.getString(0), r.getLong(1)),
             ActivityByProduct(r.getString(0), r.getLong(1), r.getLong(2), r.getLong(3), r.getLong(4))
           )}
-      }).print()
+      })//.print() -- below code for checkpoint management along with states
+        .mapWithState(activityStateSpec)
+
+      val activityStateSnapshot= statefulActivityByProduct.stateSnapshots()
+      activityStateSnapshot
+        .reduceByKeyAndWindow(
+          (a, b) => b,
+          (x, y) => x,
+          Seconds(30 / 4 * 4)
+        ) // Only saves or expose snapshot every x seconds x in this case is 30
+        .foreachRDD(rdd => rdd.map(
+        sr => ActivityByProduct(sr._1._1, sr._1._2, sr._2._1, sr._2._2, sr._2._3)
+      )
+        .toDF()
+        .registerTempTable("ActivityByProduct")
+      )
+          /**
+            * Below code has been commented to demonstrate updateStateByKey which can also be realized by using mapWithStage
+            *
+            * .updateStateByKey((newItemsPerKey: Seq[ActivityByProduct], currentState: Option[(Long, Long, Long, Long)]) => {
+            var (prevTimestamp, purchase_count, add_to_cart_count, page_view_count) = currentState.getOrElse((System.currentTimeMillis(), 0L, 0L, 0L))
+            var result : Option[(Long, Long, Long, Long)] = null
+
+            if(newItemsPerKey.isEmpty) {
+              if(System.currentTimeMillis() - prevTimestamp > 30000 + 4000)
+                result = None
+              else
+                result = Some(prevTimestamp, purchase_count, add_to_cart_count, page_view_count)
+            } else {
+
+              newItemsPerKey.foreach(a => {
+                purchase_count += a.purchase_count
+                add_to_cart_count += a.add_to_cart_count
+                page_view_count += a.page_view_count
+              })
+
+              result = Some((System.currentTimeMillis(), purchase_count, add_to_cart_count, page_view_count))
+            }
+          result
+      } )*/
+
+      /** unique visitors by product */
+      val visitorStateSpec = StateSpec
+          .function(mapVisitorsStateFunc)
+          .timeout(Minutes(120))
+
+      val hll = new HyperLogLogMonoid(12)
+      val statefulVisitorsByProduct = activityStream.map(a => {
+        ((a.product, a.timestamp_hour), hll(a.visitor.getBytes))
+      }).mapWithState(visitorStateSpec)
+
+      val visitorStateSnapshot= statefulVisitorsByProduct.stateSnapshots()
+      visitorStateSnapshot
+          .reduceByKeyAndWindow(
+            (a, b) => b,
+            (x, y) => x,
+            Seconds(30 / 4 * 4)
+          ) // Only saves or expose snapshot every x seconds x in this case is 30
+          .foreachRDD(rdd => rdd.map(
+            sr => VisitorsByProduct(sr._1._1, sr._1._2, sr._2.approximateSize.estimate)
+          )
+            .toDF()
+            .registerTempTable("VisitorsByProduct")
+          )
+
+
+      //statefulActivityByProduct.print(10)
+
       ssc
     }
     val ssc = getStreamingContext(streamingApp, sc, batchDuration)

@@ -14,4 +14,6 @@ package object domain {
                                 purchase_count : Long,
                                 add_to_cart_count : Long,
                                 page_view_count : Long)
+
+  case class VisitorsByProduct(product: String, timestamp_hour: Long, unique_visitors: Long)
 }
