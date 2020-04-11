@@ -1,11 +1,20 @@
 package streaming
 
 import domain.{Activity, ActivityByProduct, VisitorsByProduct}
+import _root_.kafka.serializer.{DefaultDecoder, StringDecoder}
+import breeze.linalg.max
 import org.apache.spark.SparkContext
 import functions._
 import org.apache.spark.streaming._
 import utils.ScalaUtils._
 import com.twitter.algebird.HyperLogLogMonoid
+import config.Settings
+import javax.xml.soap.SOAPMessage
+import org.apache.spark.sql.SaveMode
+import org.apache.spark.storage.StorageLevel
+import org.apache.spark.streaming.kafka.KafkaUtils
+import _root_.kafka.common.TopicAndPartition
+import _root_.kafka.message.MessageAndMetadata
 
 object StreamingJob {
   def main(args: Array[String]): Unit = {
@@ -19,27 +28,85 @@ object StreamingJob {
     def streamingApp(sc: SparkContext, batchDuration: Duration) = {
       val ssc = new StreamingContext(sc, batchDuration)
 
-      val inputPath = isIDE match {
+      /**----------------------- Kafka start*/
+      val wlc = Settings.WebLogGen
+      val topic = wlc.kafkaTopic
+
+      val kafkaParams = Map (
+        "zookeeper.connect" -> "localhost:2181",
+        "group.id" -> "lambda",
+        "auto.offset.reset" -> "largest"
+      )
+
+      // for using direct api i.e. Simple ApI
+      val kafkaDirectParams = Map (
+        "metadata.broker.list" -> "localhost:9092",
+        "group.id" -> "lambda",
+        "auto.offset.reset" -> "smallest"
+      )
+
+      val hdfsPath = wlc.hdfsPath
+      val hdfsData = sqlContext.read.parquet(hdfsPath)
+
+      val fromOffsets = hdfsData
+                          .groupBy("topic", "kafkaPartition")
+                          .agg(Map( "untilOffset" -> "untilOffset"))
+                          .collect().map{ row =>
+                            (TopicAndPartition(row.getAs[String]("topic"), row.getAs[Int]("kafkaPartition")),
+                              row.getAs[String]("untilOffset").toLong + 1)
+                          }.toMap
+
+      val kafkaStream = KafkaUtils.createStream[String, String, StringDecoder, StringDecoder] (
+        ssc, kafkaParams, Map(topic -> 1), StorageLevel.MEMORY_AND_DISK
+      ).map(_._2)
+
+      val kafkaDirectStream = fromOffsets.isEmpty match {
+        case true =>
+          KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder](
+                                    ssc, kafkaDirectParams, Set(topic))
+
+        case false =>
+          KafkaUtils.createDirectStream[String, String, StringDecoder, StringDecoder, (String, String)](
+            ssc, kafkaDirectParams, fromOffsets, { mmd : MessageAndMetadata[String, String] => (mmd.key(), mmd.message()) }
+          )
+      }
+      /** -----------------------------Kafka end*/
+        /** commented after kafka impl*/
+      /*val inputPath = isIDE match {
         case true => "file:///H:/Dhaval/Tech/pluralsight-lambda-arch/Boxes/spark-kafka-cassandra-applying-lambda-architecture/vagrant/input"
         case false => "file:///vagrant/input"
       }
 
-      val textDStream = ssc.textFileStream(inputPath)
-      val activityStream = textDStream.transform(input => {
-        input.flatMap{ line =>
-          val record = line.split("\\t")
-          val MS_IN_HOUR = 1000 * 60 * 60
-          if (record.length == 7)
-            Some(Activity(record(0).toLong / MS_IN_HOUR * MS_IN_HOUR, record(1), record(2), record(3), record(4), record(5), record(6)))
-          else
-            None
-        }
+      val textDStream = ssc.textFileStream(inputPath)*/
+      /** replaced textDStream with kafkaStream after kafka based impl*/
+      //val activityStream = textDStream.transform(input => {
+      // commented to use direct API i.e. Simple API val activityStream = kafkaStream.transform(input => {
+      val activityStream = kafkaDirectStream.transform(input => {
+        functions.rddToRDDActivity(input)
       }).cache()
 
+
+      /** as part of kafka section - we want to save data to hdfs Start
+        * ideally below code should be extracted into a separate
+        * */
+
+      activityStream.foreachRDD { rdd =>
+        val activityDF = rdd
+                          .toDF()
+                          .selectExpr("timestamp_hour", "referrer", "action", "prevPage", "page", "visitor",
+                            "product", "inputProps.topic as topic", "inputProps.kafkaPartition as kafkaPartition",
+                            "inputProps.fromOffset as fromOffset", "inputProps.untilOffset as untilOffset")
+        activityDF
+          .write
+          .partitionBy("topic", "kafkaPartition", "timestamp_hour")
+          .mode(SaveMode.Append)
+          .parquet(hdfsPath)
+      }
+      /** as part of kafka section - we want to save data to hdfs End */
       // from below code variable initialization is for using mapWithState
       val activityStateSpec = StateSpec
         .function(mapActivityStateFunc)
-        .timeout(Seconds(30))
+        .timeout(Minutes(120))
       // till above code variable initialization is for using mapWithState
 
       val statefulActivityByProduct = activityStream.transform(rdd => {
