@@ -15,6 +15,9 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.streaming.kafka.KafkaUtils
 import _root_.kafka.common.TopicAndPartition
 import _root_.kafka.message.MessageAndMetadata
+import com.datastax.spark.connector._
+import com.datastax.spark.connector.streaming._
+
 
 object StreamingJob {
   def main(args: Array[String]): Unit = {
@@ -136,12 +139,14 @@ object StreamingJob {
           (x, y) => x,
           Seconds(30 / 4 * 4)
         ) // Only saves or expose snapshot every x seconds x in this case is 30
-        .foreachRDD(rdd => rdd.map(
-        sr => ActivityByProduct(sr._1._1, sr._1._2, sr._2._1, sr._2._2, sr._2._3)
-      )
-        .toDF()
-        .registerTempTable("ActivityByProduct")
-      )
+        /******* commented for inserting data to cassandra ----- .foreachRDD(rdd => rdd*/
+        .map(sr => ActivityByProduct(sr._1._1, sr._1._2, sr._2._1, sr._2._2, sr._2._3))
+        .saveToCassandra("lambda", "stream_activity_by_product")
+        /****
+          * commented for inserting data to Cassandra as part of last section
+          * .toDF()
+        .registerTempTable("ActivityByProduct")*/
+      //)
           /**
             * Below code has been commented to demonstrate updateStateByKey which can also be realized by using mapWithStage
             *
@@ -184,12 +189,14 @@ object StreamingJob {
             (x, y) => x,
             Seconds(30 / 4 * 4)
           ) // Only saves or expose snapshot every x seconds x in this case is 30
-          .foreachRDD(rdd => rdd.map(
-            sr => VisitorsByProduct(sr._1._1, sr._1._2, sr._2.approximateSize.estimate)
-          )
-            .toDF()
+        /******* commented for inserting data to cassandra ----- .foreachRDD(rdd => rdd*/
+        .map(sr => VisitorsByProduct(sr._1._1, sr._1._2, sr._2.approximateSize.estimate))
+          .saveToCassandra("lambda","stream_visitors_by_product")
+            /******
+              * commented for inserting data to Cassandra as part of last section
+              * .toDF()
             .registerTempTable("VisitorsByProduct")
-          )
+          )*/
 
 
       //statefulActivityByProduct.print(10)

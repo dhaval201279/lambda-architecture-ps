@@ -80,6 +80,13 @@ object BatchJob {
         |FROM activity GROUP BY product, timestamp_hour
       """.stripMargin)
 
+    // for cassandra
+    visitorsByProduct
+      .write
+      .format("org.apache.spark.sql.cassandra")
+      .options(Map("keyspace" -> "lambda", "table" -> "batch_visitors_by_product"))
+      .save()
+
     /**  Since we dont need to print schema we are commenting it
       *
     visitorsByProduct.printSchema()
@@ -98,9 +105,9 @@ object BatchJob {
 
     activityByProduct
       .write
-      .partitionBy("timestamp_hour")
-      .mode(SaveMode.Append)
-      .parquet("hdfs://lambda-pluralsight:9000/lambda/batch1")
+      .format("org.apache.spark.sql.cassandra")
+      .options(Map("keyspace" -> "lambda", "table" -> "batch_activity_by_product"))
+      .save()
 
     /**  Since we dont need we are commenting it
       *

@@ -9,7 +9,9 @@ import org.apache.spark.streaming.{Duration, Seconds, StreamingContext}
 object ScalaUtils {
   def getSparkContext(appName: String) = {
     // Get Spark Configurations
-    val conf = new SparkConf().setAppName(appName)
+    val conf = new SparkConf()
+      .setAppName(appName)
+      .set("spark.cassandra.connection.host", "localhost")
 
     var checkPointDirectory = ""
 
